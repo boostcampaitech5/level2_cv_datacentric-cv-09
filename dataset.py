@@ -10,6 +10,9 @@ import albumentations as A
 from torch.utils.data import Dataset
 from shapely.geometry import Polygon
 import random 
+from albumentations.augmentations.geometric.resize import LongestMaxSize
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 def split_list(all_list,ratio=0.2):
     """_summary_
@@ -353,7 +356,7 @@ def filter_vertices(vertices, labels, ignore_under=0, drop_under=0):
 
 class SceneTextDataset(Dataset):
     def __init__(self, root_dir,
-                 img_keys,
+                 image_fnames,
                  split='train',
                  image_size=2048,
                  crop_size=1024,
@@ -361,17 +364,21 @@ class SceneTextDataset(Dataset):
                  ignore_under_threshold=10,
                  drop_under_threshold=1,
                  color_jitter=True,
-                 normalize=True):
+                 normalize=True,
+                 transform=True,
+                 train=True):
         with open(osp.join(root_dir, 'ufo/{}.json'.format(split)), 'r') as f:
             anno = json.load(f)
 
         self.anno = anno
-        self.image_fnames = img_keys
+        self.image_fnames = image_fnames
         self.image_dir = osp.join(root_dir, 'img', split)
 
         self.image_size, self.crop_size = image_size, crop_size
         self.color_jitter, self.normalize = color_jitter, normalize
-
+        self.transform = transform
+        self.train = train
+        
         self.ignore_tags = ignore_tags
 
         self.drop_under_threshold = drop_under_threshold
@@ -408,25 +415,27 @@ class SceneTextDataset(Dataset):
         )
 
         image = Image.open(image_fpath)
-        image, vertices = resize_img(image, vertices, self.image_size)
-        image, vertices = adjust_height(image, vertices)
-        image, vertices = rotate_img(image, vertices)
-        image, vertices = crop_img(image, vertices, labels, self.crop_size)
+        if self.transform:
+            image, vertices = resize_img(image, vertices, self.image_size)
+            image, vertices = adjust_height(image, vertices)
+            image, vertices = rotate_img(image, vertices)
+            image, vertices = crop_img(image, vertices, labels, self.crop_size)
 
         if image.mode != 'RGB':
             image = image.convert('RGB')
         image = np.array(image)
-
         funcs = []
         if self.color_jitter:
             funcs.append(A.ColorJitter(0.5, 0.5, 0.5, 0.25))
         if self.normalize:
-            funcs.append(A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)))
+            funcs.append(A.Normalize())
         transform = A.Compose(funcs)
 
-        image = transform(image=image)['image']
         word_bboxes = np.reshape(vertices, (-1, 4, 2))
         roi_mask = generate_roi_mask(image, vertices, labels)
-
+        
+        if self.train:
+            image = transform(image=image)['image']
+            
         return image, word_bboxes, roi_mask
         
