@@ -56,14 +56,8 @@ def do_training(args):
     
     seed_everything(args.seed)
     
-    with open(osp.join(args.data_dir, 'ufo/train.json'), 'r') as f:
-        anno = json.load(f)
-    all_imgs = sorted(anno['images'].keys())
-    train_list, val_list = split_list(all_imgs)
-    
     train_dataset = SceneTextDataset(
         args.data_dir,
-        train_list,
         image_size=args.image_size,
         crop_size=args.input_size,
         ignore_tags=args.ignore_tags
@@ -71,7 +65,7 @@ def do_training(args):
     
     val_dataset = SceneTextDataset(
         args.data_dir,
-        val_list,
+        split='val',
         image_size=args.image_size,
         crop_size=args.input_size,
         ignore_tags=args.ignore_tags
@@ -102,6 +96,8 @@ def do_training(args):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[args.max_epoch // 2], gamma=0.1)
+
+    best_loss = 10000
 
     for epoch in range(args.max_epoch):
         # to train
@@ -137,9 +133,9 @@ def do_training(args):
             train_average[key] = round(train_average[key]/num_train_batches,4)
         
         scheduler.step()
-
+        epoch_loss /= num_train_batches
         print('Train Mean loss: {:.4f} | Elapsed time: {}'.format(
-            epoch_loss / num_train_batches, timedelta(seconds=time.time() - epoch_start)))
+            epoch_loss , timedelta(seconds=time.time() - epoch_start)))
         
         # to evaluate
         model.eval()
@@ -149,8 +145,7 @@ def do_training(args):
             'Angle loss': 0,
             'IoU loss': 0
         }
-        predict_box = []
-        gt_box = []
+
         with torch.no_grad():
             with tqdm(total=num_val_batches) as pbar:
                 for img, gt_score_map, gt_geo_map, roi_mask in val_loader:
@@ -177,13 +172,15 @@ def do_training(args):
         for key in val_average.keys():
             val_average[key] = round(val_average[key]/num_val_batches,4)
 
+        val_loss = val_loss/num_val_batches
         print('Eval Mean loss: {:.4f} | Elapsed time: {}'.format(
-            val_loss / num_val_batches, timedelta(seconds=time.time() - val_start)))
+            val_loss, timedelta(seconds=time.time() - val_start)))
         
         if args.wandb:
             metric_info = {
                 'train/loss' : epoch_loss,
                 'val/loss' : val_loss,
+                'lr/lr' :optimizer.param_groups[0]['lr']
             }
             for key in train_average.keys():
                 metric_info[f"train/{key}"] = train_average[key]
@@ -194,12 +191,19 @@ def do_training(args):
 
             
         # to save
-        if (epoch + 1) % args.save_interval == 0:
-            if not osp.exists(args.model_dir):
-                os.makedirs(args.model_dir)
 
+        if not osp.exists(args.model_dir):
+            os.makedirs(args.model_dir)
+            
+        if (epoch + 1) % args.save_interval == 0:
             ckpt_fpath = osp.join(args.model_dir, 'latest.pth')
             torch.save(model.state_dict(), ckpt_fpath)
+            
+        if best_loss > (val_loss/num_val_batches):
+                ckpt_fpath = osp.join(args.model_dir, 'best.pth')
+                torch.save(model.state_dict(), ckpt_fpath)
+                best_loss = val_loss
+                print(f"save best model {ckpt_fpath}")
 
 
 def main(args):
@@ -212,6 +216,8 @@ if __name__ == '__main__':
         wandb.init(
             entity = 'boost_cv_09',
             project = args.project,
-            name = args.name
+            name = args.name,
+            config = args
         )
     main(args)
+
