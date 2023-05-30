@@ -65,14 +65,8 @@ def do_training(args):
     
     seed_everything(args.seed)
     
-    with open(osp.join(args.data_dir, 'ufo/train.json'), 'r') as f:
-        anno = json.load(f)
-    all_imgs = sorted(anno['images'].keys())
-    train_list, val_list = split_list(all_imgs)
-    
     train_dataset = SceneTextDataset(
         args.data_dir,
-        train_list,
         image_size=args.image_size,
         crop_size=args.input_size,
         ignore_tags=args.ignore_tags
@@ -80,7 +74,7 @@ def do_training(args):
     
     val_dataset = SceneTextDataset(
         args.data_dir,
-        val_list,
+        split='val',
         color_jitter=False,
         ignore_tags=args.ignore_tags,
         transform=False,
@@ -102,7 +96,7 @@ def do_training(args):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = EAST()
-    model.load_state_dict(torch.load(args.weight, map_location='cpu'))
+    # model.load_state_dict(torch.load(args.weight, map_location='cpu'))
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[args.max_epoch // 2], gamma=0.1)
@@ -114,7 +108,16 @@ def do_training(args):
         ])
     
     best_scroe = 0
-    
+    precision = 0
+    recall = 0
+    hmean = 0
+    val_loss = 0
+    val_average = {
+                'Cls loss':0,
+                'Angle loss': 0,
+                'IoU loss': 0
+            }
+        
     for epoch in range(args.max_epoch):
         # to train
         model.train()
@@ -154,21 +157,18 @@ def do_training(args):
             epoch_loss / num_train_batches, timedelta(seconds=time.time() - epoch_start)))
         
         # to evaluate
-        model.eval()
-        val_loss, val_start = 0, time.time()
-        val_average = {
-            'Cls loss':0,
-            'Angle loss': 0,
-            'IoU loss': 0
-        }
-        precision = 0
-        recall = 0
-        hmean = 0
-        
-        predict_box = {}
-        gt_box = {}
-        transcriptions_dict = {}
         if (epoch+1) % args.save_interval == 0:
+            model.eval()
+            val_loss, val_start = 0, time.time()
+            val_average = {
+                'Cls loss':0,
+                'Angle loss': 0,
+                'IoU loss': 0
+            }
+        
+            predict_box = {}
+            gt_box = {}
+            transcriptions_dict = {}
             with torch.no_grad():
                 with tqdm(total=num_val_batches) as pbar:
                     batch_data = {
@@ -287,7 +287,8 @@ def do_training(args):
                 'val/loss': val_loss/num_val_batches,
                 'metric/precision': precision,
                 'metric/recall': recall,
-                'metric/hmean': hmean
+                'metric/hmean': hmean,
+                'lr/lr': optimizer.param_groups[0]['lr']
             }
             for key in train_average:
                 metric_info[f"train/{key}"] = train_average[key]
@@ -309,6 +310,7 @@ if __name__ == '__main__':
         wandb.init(
             entity = 'boost_cv_09',
             project = args.project,
-            name = args.name
+            name = args.name,
+            config= args
         )
     main(args)

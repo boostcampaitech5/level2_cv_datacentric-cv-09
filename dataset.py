@@ -356,7 +356,6 @@ def filter_vertices(vertices, labels, ignore_under=0, drop_under=0):
 
 class SceneTextDataset(Dataset):
     def __init__(self, root_dir,
-                 image_fnames,
                  split='train',
                  image_size=2048,
                  crop_size=1024,
@@ -371,7 +370,7 @@ class SceneTextDataset(Dataset):
             anno = json.load(f)
 
         self.anno = anno
-        self.image_fnames = image_fnames
+        self.image_fnames = sorted(anno['images'].keys())
         self.image_dir = osp.join(root_dir, 'img', split)
 
         self.image_size, self.crop_size = image_size, crop_size
@@ -405,6 +404,7 @@ class SceneTextDataset(Dataset):
 
             vertices.append(np.array(word_info['points']).flatten())
             labels.append(int(not word_info['illegibility']))
+        
         vertices, labels = np.array(vertices, dtype=np.float32), np.array(labels, dtype=np.int64)
 
         vertices, labels = filter_vertices(
@@ -415,11 +415,14 @@ class SceneTextDataset(Dataset):
         )
 
         image = Image.open(image_fpath)
-        if self.transform:
-            image, vertices = resize_img(image, vertices, self.image_size)
-            image, vertices = adjust_height(image, vertices)
-            image, vertices = rotate_img(image, vertices)
-            image, vertices = crop_img(image, vertices, labels, self.crop_size)
+        if vertices.shape[0]==0:
+            image = image.resize((self.crop_size,self.crop_size), Image.BILINEAR)
+        else:
+            if self.transform:
+                image, vertices = resize_img(image, vertices, self.image_size)
+                image, vertices = adjust_height(image, vertices)
+                image, vertices = rotate_img(image, vertices)
+                image, vertices = crop_img(image, vertices, labels, self.crop_size)
 
         if image.mode != 'RGB':
             image = image.convert('RGB')
@@ -427,6 +430,7 @@ class SceneTextDataset(Dataset):
         funcs = []
         if self.color_jitter:
             funcs.append(A.ColorJitter(0.5, 0.5, 0.5, 0.25))
+            # funcs.append(A.CLAHE((1.0,3.0),(3,3)))
         if self.normalize:
             funcs.append(A.Normalize())
         transform = A.Compose(funcs)
