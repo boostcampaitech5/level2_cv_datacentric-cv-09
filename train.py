@@ -98,7 +98,7 @@ def do_training(args):
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[args.max_epoch // 2], gamma=0.1)
 
     best_loss = 10000
-    
+
     for epoch in range(args.max_epoch):
         # to train
         model.train()
@@ -145,7 +145,7 @@ def do_training(args):
             'Angle loss': 0,
             'IoU loss': 0
         }
-        
+
         with torch.no_grad():
             with tqdm(total=num_val_batches) as pbar:
                 for img, gt_score_map, gt_geo_map, roi_mask in val_loader:
@@ -191,11 +191,11 @@ def do_training(args):
 
             
         # to save
+
         if not osp.exists(args.model_dir):
             os.makedirs(args.model_dir)
             
         if (epoch + 1) % args.save_interval == 0:
-
             ckpt_fpath = osp.join(args.model_dir, 'latest.pth')
             torch.save(model.state_dict(), ckpt_fpath)
             
@@ -220,3 +220,4 @@ if __name__ == '__main__':
             config = args
         )
     main(args)
+
