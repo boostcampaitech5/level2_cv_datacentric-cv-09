@@ -12,18 +12,14 @@ from torch.utils.data import DataLoader
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
-from east_dataset import EASTDataset, generate_score_geo_maps
-from dataset import SceneTextDataset, split_list
+from east_dataset import EASTDataset
+from dataset import SceneTextDataset, CustomDataset
 from model import EAST
 from utils import seed_everything, get_gpu
 import wandb
 from deteval import calc_deteval_metrics
 import numpy as np
-from albumentations.augmentations.geometric.resize import LongestMaxSize
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 from detect import get_bboxes
-import cv2
 
 def parse_args():
     parser = ArgumentParser()
@@ -44,7 +40,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--val_batch_size', type=int, default=4)
     parser.add_argument('--learning_rate', type=float, default=1e-3)
-    parser.add_argument('--max_epoch', type=int, default=50)
+    parser.add_argument('--max_epoch', type=int, default=100)
     parser.add_argument('--save_interval', type=int, default=5)
     parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
     parser.add_argument('--weight', type=str,default='/opt/ml/input/code/trained_models/best.pth')
@@ -72,15 +68,7 @@ def do_training(args):
         ignore_tags=args.ignore_tags
     )
     
-    val_dataset = SceneTextDataset(
-        args.data_dir,
-        split='val',
-        color_jitter=False,
-        ignore_tags=args.ignore_tags,
-        transform=False,
-        normalize=False,
-        train=False,
-    )
+    val_dataset = CustomDataset()
     
     train_dataset = EASTDataset(train_dataset)
 
@@ -96,16 +84,11 @@ def do_training(args):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = EAST()
-    # model.load_state_dict(torch.load(args.weight, map_location='cpu'))
+    model.load_state_dict(torch.load(args.weight, map_location='cpu'))
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[args.max_epoch // 2], gamma=0.1)
-
-    prep_fn = A.Compose([
-        LongestMaxSize(args.image_size), 
-        A.PadIfNeeded(min_height=args.image_size, min_width=args.image_size, position=A.PadIfNeeded.PositionType.TOP_LEFT),
-        A.Normalize(), 
-        ])
+    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[args.max_epoch // 2], gamma=0.1)
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer,T_max= 10,eta_min=args.learning_rate*0.1)
     
     best_scroe = 0
     precision = 0
@@ -179,24 +162,17 @@ def do_training(args):
                     batch, orig_sizes = [], []
                     temp = 0
                     
-                    for i,(img, word_bboxes, roi_mask) in enumerate(iter(val_dataset)):
+                    for i,(input_img, word_bboxes, roi_mask, gt_score_map, gt_geo_map, ori_size, transcriptions) in enumerate(iter(val_dataset)):
                         # 배치만큼의 이미지를 넣는다
-                        orig_sizes.append(img.shape[:2])
-                        input_img= prep_fn(image=img)['image']
-                        gt_score_map, gt_geo_map = generate_score_geo_maps(input_img, word_bboxes, map_scale=0.5)
-                        input_img = ToTensorV2()(image=input_img)['image']
+                        orig_sizes.append(ori_size)
                         batch.append(input_img)
                         
                         gt_box[i]=word_bboxes
-                        transcriptions_dict[i] = ["1"]*len(word_bboxes)
-                        mask_size = int(args.image_size * 0.5), int(args.image_size * 0.5)
-                        roi_mask = cv2.resize(roi_mask, dsize=mask_size)
-                        if roi_mask.ndim == 2:
-                            roi_mask = np.expand_dims(roi_mask, axis=2)
+                        transcriptions_dict[i] = transcriptions
                         
-                        batch_data['gt_score_maps'].append(torch.Tensor(gt_score_map).permute(2, 0, 1))
-                        batch_data['gt_geo_maps'].append(torch.Tensor(gt_geo_map).permute(2, 0, 1))
-                        batch_data['gt_roi_masks'].append(torch.Tensor(roi_mask).permute(2, 0, 1))
+                        batch_data['gt_score_maps'].append(gt_score_map)
+                        batch_data['gt_geo_maps'].append(gt_geo_map)
+                        batch_data['gt_roi_masks'].append(roi_mask)
                         
                         if len(batch) == args.val_batch_size:
                             pbar.set_description('[Epoch {}]'.format(epoch + 1))
@@ -271,7 +247,7 @@ def do_training(args):
             if not osp.exists(args.model_dir):
                 os.makedirs(args.model_dir)
                 
-            ckpt_fpath = osp.join(args.model_dir, 'latest.pth')
+            ckpt_fpath = osp.join(args.model_dir, f'{epoch+1}_{hmean:.3f}.pth')
             torch.save(model.state_dict(), ckpt_fpath)
             print(f"save latest model {ckpt_fpath}")
                 
