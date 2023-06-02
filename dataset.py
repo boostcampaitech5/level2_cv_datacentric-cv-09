@@ -355,7 +355,7 @@ def filter_vertices(vertices, labels, ignore_under=0, drop_under=0):
         drop_under  : 특정 넓이 이하 제거. Defaults to 0.
 
     Returns:
-        _type_: _description_
+        vertices, labels : vertices, labels 
     """
     if drop_under == 0 and ignore_under == 0:
         return vertices, labels
