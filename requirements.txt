@@ -1,0 +1,11 @@
+lanms==1.0.2
+numpy==1.21.3
+opencv-python==4.5.4.58
+shapely==1.7.1
+tqdm==4.62.3
+matplotlib
+albumentations==1.1.0
+wandb
+torch==1.7.1
+torchvision==0.8.2
+streamlit==1.22.0
