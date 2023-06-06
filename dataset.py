@@ -10,6 +10,12 @@ import albumentations as A
 from torch.utils.data import Dataset
 from shapely.geometry import Polygon
 import random 
+from albumentations.augmentations.geometric.resize import LongestMaxSize
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from east_dataset import generate_score_geo_maps
+import os
+import pickle
 
 def split_list(all_list,ratio=0.2):
     """_summary_
@@ -382,7 +388,9 @@ class SceneTextDataset(Dataset):
                  drop_under_threshold=1,
                  color_jitter=True,
                  normalize=True,
-                 ):
+                 transform=True,
+                 train=True):
+
         with open(osp.join(root_dir, 'ufo/{}.json'.format(split)), 'r') as f:
             anno = json.load(f)
 
@@ -392,7 +400,9 @@ class SceneTextDataset(Dataset):
 
         self.image_size, self.crop_size = image_size, crop_size
         self.color_jitter, self.normalize = color_jitter, normalize
-
+        self.transform = transform
+        self.train = train
+        
         self.ignore_tags = ignore_tags
 
         self.drop_under_threshold = drop_under_threshold
@@ -419,6 +429,7 @@ class SceneTextDataset(Dataset):
 
             vertices.append(np.array(word_info['points']).flatten())
             labels.append(int(not word_info['illegibility']))
+        
         vertices, labels = np.array(vertices, dtype=np.float32), np.array(labels, dtype=np.int64)
 
         vertices, labels = filter_vertices(
@@ -429,25 +440,144 @@ class SceneTextDataset(Dataset):
         )
 
         image = Image.open(image_fpath)
-        image, vertices = resize_img(image, vertices, self.image_size)
-        image, vertices = adjust_height(image, vertices)
-        image, vertices = rotate_img(image, vertices)
-        image, vertices = crop_img(image, vertices, labels, self.crop_size)
+        if vertices.shape[0]==0:
+            image = image.resize((self.crop_size,self.crop_size), Image.BILINEAR)
+        else:
+            if self.transform:
+                image, vertices = resize_img(image, vertices, self.image_size)
+                image, vertices = adjust_height(image, vertices)
+                image, vertices = rotate_img(image, vertices)
+                image, vertices = crop_img(image, vertices, labels, self.crop_size)
 
         if image.mode != 'RGB':
             image = image.convert('RGB')
         image = np.array(image)
-
         funcs = []
         if self.color_jitter:
             funcs.append(A.ColorJitter(0.5, 0.5, 0.5, 0.25))
+            # funcs.append(A.CLAHE((1.0,3.0),(3,3)))
         if self.normalize:
             funcs.append(A.Normalize())
         transform = A.Compose(funcs)
 
-        image = transform(image=image)['image']
+        word_bboxes = np.reshape(vertices, (-1, 4, 2))
+        roi_mask = generate_roi_mask(image, vertices, labels)
+        
+        if self.train:
+            image = transform(image=image)['image']
+            
+        return image, word_bboxes, roi_mask
+        
+        
+class ValDataset(Dataset):
+    def __init__(self, root_dir,
+                 split='val',
+                 image_size=2048,
+                 ignore_tags=['masked', 'excluded-region', 'maintable', 'stamp'],
+                 ignore_under_threshold=10,
+                 drop_under_threshold=1,
+                 transform = None,
+):
+        with open(osp.join(root_dir, 'ufo/{}.json'.format(split)), 'r') as f:
+            anno = json.load(f)
+
+        self.anno = anno
+        self.image_fnames = sorted(anno['images'].keys())
+        self.image_dir = osp.join(root_dir, 'img', split)
+
+        self.image_size = image_size
+        
+        self.ignore_tags = ignore_tags
+
+        self.drop_under_threshold = drop_under_threshold
+        self.ignore_under_threshold = ignore_under_threshold
+        if transform:
+            self.transform = transform
+        else:
+            self.transform =A.Compose([
+                                LongestMaxSize(self.image_size), 
+                                A.PadIfNeeded(min_height=self.image_size, min_width=self.image_size, position=A.PadIfNeeded.PositionType.TOP_LEFT),
+                                A.Normalize(), 
+                            ])
+        
+    def __len__(self):
+        return len(self.image_fnames)
+
+    def __getitem__(self, idx):
+        image_fname = self.image_fnames[idx]
+        image_fpath = osp.join(self.image_dir, image_fname)
+
+        vertices, labels = [], []
+        for word_info in self.anno['images'][image_fname]['words'].values():
+            word_tags = word_info['tags']
+
+            ignore_sample = any(elem for elem in word_tags if elem in self.ignore_tags)
+            num_pts = np.array(word_info['points']).shape[0]
+
+            # skip samples with ignore tag and
+            # samples with number of points greater than 4
+            if ignore_sample or num_pts > 4:
+                continue
+
+            vertices.append(np.array(word_info['points']).flatten())
+            labels.append(int(not word_info['illegibility']))
+        
+        vertices, labels = np.array(vertices, dtype=np.float32), np.array(labels, dtype=np.int64)
+
+        vertices, labels = filter_vertices(
+            vertices,
+            labels,
+            ignore_under=self.ignore_under_threshold,
+            drop_under=self.drop_under_threshold
+        )
+
+        image = Image.open(image_fpath)
+        if vertices.shape[0]==0:
+            image = image.resize((self.crop_size,self.crop_size), Image.BILINEAR)
+
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        image = np.array(image)
+ 
         word_bboxes = np.reshape(vertices, (-1, 4, 2))
         roi_mask = generate_roi_mask(image, vertices, labels)
 
-        return image, word_bboxes, roi_mask
+        # return image, word_bboxes, roi_mask
+    
+        input_img= self.transform(image=image)['image']
+        gt_score_map, gt_geo_map = generate_score_geo_maps(input_img, word_bboxes, map_scale=0.5)
+        input_img = ToTensorV2()(image=input_img)['image']
         
+        transcriptions = ["1"]*len(word_bboxes)
+        mask_size = int(self.image_size * 0.5), int(self.image_size * 0.5)
+        roi_mask = cv2.resize(roi_mask, dsize=mask_size)
+        if roi_mask.ndim == 2:
+            roi_mask = np.expand_dims(roi_mask, axis=2)
+        
+        gt_score_map = torch.Tensor(gt_score_map).permute(2, 0, 1)
+        gt_geo_map = torch.Tensor(gt_geo_map).permute(2, 0, 1)
+        roi_mask = torch.Tensor(roi_mask).permute(2, 0, 1)
+        
+        ori_size = image.shape[:2]
+        
+        return input_img, word_bboxes, roi_mask, gt_score_map, gt_geo_map, ori_size, transcriptions
+    
+    
+class CustomDataset(Dataset):
+    def __init__(self, data_dir = "/opt/ml/input/data/medical/pickle_data/", split='val'):
+        self.data_dir = data_dir
+        self.split = split 
+        datalist = os.listdir(os.path.join(self.data_dir,self.split))
+        self.data_list = [d for d in datalist if d.endswith(".pkl")]
+        self.data_list.sort()
+
+    def __getitem__(self, idx):
+        file_path = os.path.join(self.data_dir,self.split,self.data_list[idx])
+        with open(file=file_path,mode='rb') as f:
+            data = pickle.load(f)
+        input_img, word_bboxes, roi_mask, gt_score_map, gt_geo_map, ori_size, transcriptions = data
+
+        return input_img, word_bboxes, roi_mask, gt_score_map, gt_geo_map, ori_size, transcriptions
+    
+    def __len__(self):
+        return len(self.data_list)
