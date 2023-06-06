@@ -332,6 +332,16 @@ def rotate_img(img, vertices, angle_range=10):
 
 
 def generate_roi_mask(image, vertices, labels):
+    """_summary_
+    generate roi mask
+    Args:
+        image       : PIL Image
+        vertices    : vertics of text regions <numpy.ndarray, (n,8)>
+        labels      : label 
+
+    Returns:
+        mask        : mask data 
+    """
     mask = np.ones(image.shape[:2], dtype=np.float32)
     ignored_polys = []
     for vertice, label in zip(vertices, labels):
@@ -342,6 +352,17 @@ def generate_roi_mask(image, vertices, labels):
 
 
 def filter_vertices(vertices, labels, ignore_under=0, drop_under=0):
+    """_summary_
+    올바르 bbox filter
+    Args:
+        vertices    : vertics of text regions <numpy.ndarray, (n,8)>
+        labels      : label data
+        ignore_under: 특정 넓이 이하 제거. Defaults to 0.
+        drop_under  : 특정 넓이 이하 제거. Defaults to 0.
+
+    Returns:
+        vertices, labels : vertices, labels 
+    """
     if drop_under == 0 and ignore_under == 0:
         return vertices, labels
 
@@ -369,6 +390,7 @@ class SceneTextDataset(Dataset):
                  normalize=True,
                  transform=True,
                  train=True):
+
         with open(osp.join(root_dir, 'ufo/{}.json'.format(split)), 'r') as f:
             anno = json.load(f)
 

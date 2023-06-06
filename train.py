@@ -67,8 +67,9 @@ def do_training(args):
         crop_size=args.input_size,
         ignore_tags=args.ignore_tags
     )
-    
+
     val_dataset = CustomDataset()
+
     
     train_dataset = EASTDataset(train_dataset)
 
@@ -87,6 +88,7 @@ def do_training(args):
     model.load_state_dict(torch.load(args.weight, map_location='cpu'))
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[args.max_epoch // 2], gamma=0.1)
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer,T_max= 10,eta_min=args.learning_rate*0.1)
     
@@ -135,9 +137,9 @@ def do_training(args):
             train_average[key] = round(train_average[key]/num_train_batches,4)
         
         scheduler.step()
-
+        epoch_loss /= num_train_batches
         print('Train Mean loss: {:.4f} | Elapsed time: {}'.format(
-            epoch_loss / num_train_batches, timedelta(seconds=time.time() - epoch_start)))
+            epoch_loss , timedelta(seconds=time.time() - epoch_start)))
         
         # to evaluate
         if (epoch+1) % args.save_interval == 0:
@@ -259,6 +261,7 @@ def do_training(args):
                 
         if args.wandb:
             metric_info = {
+
                 'train/loss' : epoch_loss / num_train_batches,
                 'val/loss': val_loss/num_val_batches,
                 'metric/precision': precision,
@@ -273,8 +276,6 @@ def do_training(args):
                 
             wandb.log(metric_info, step= epoch)
 
-            
-
 
 def main(args):
     do_training(args)
@@ -287,6 +288,7 @@ if __name__ == '__main__':
             entity = 'boost_cv_09',
             project = args.project,
             name = args.name,
-            config= args
+            config = args
         )
     main(args)
+
